@@ -36,3 +36,8 @@ I mange tilfeller styres dette i programlogikk: “Ved innlegging av en ny flyvn
 
 Man kan si “sluttdato i Flyrute må være lik eller etter oppstartsdato”, eller “faktisk_avgang kan ikke være før datoens planlagte start.” Slike ting krever ofte en CHECK‐constraint med ganske omstendelig håndtering av datotyper, eller en trigger.
 Når dato ofte lagres som TEXT i SQLite, er dette spesielt vanskelig å håndheve.
+
+### InnsjekketBagasje vs. Bagasje
+
+Diagrammet kaller entiteten «InnsjekketBagasje (Registreringsnr, Vekt, Innleveringstid)».
+I koden heter tabellen bare Bagasje med bagasje_id som PK.

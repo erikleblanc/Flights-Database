@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-print("Current working directory:", os.getcwd()) # Hvor er vi?
+print("Current working directory:", os.getcwd())
 
 def opprett_database(db_fil="flydb.sqlite"):
     # Åpne / opprett SQLite-database:
@@ -12,19 +12,24 @@ def opprett_database(db_fil="flydb.sqlite"):
     cur.execute("PRAGMA foreign_keys = ON;")
 
     # -- Sletter tabeller i riktig rekkefølge --
+    cur.execute("DROP TABLE IF EXISTS InnsjekketBagasje;")
+    cur.execute("DROP TABLE IF EXISTS DelReise;")
     cur.execute("DROP TABLE IF EXISTS Bagasje;")
     cur.execute("DROP TABLE IF EXISTS Billett;")
     cur.execute("DROP TABLE IF EXISTS Bestilling;")
+    cur.execute("DROP TABLE IF EXISTS Mellomlanding;")
     cur.execute("DROP TABLE IF EXISTS Flyvning;")
     cur.execute("DROP TABLE IF EXISTS Flyrute;")
     cur.execute("DROP TABLE IF EXISTS Flyplass;")
     cur.execute("DROP TABLE IF EXISTS Fly;")
     cur.execute("DROP TABLE IF EXISTS Flytype;")
     cur.execute("DROP TABLE IF EXISTS Flyprodusent;")
-    cur.execute("DROP TABLE IF EXISTS Flyselskap;")
+    cur.execute("DROP TABLE IF EXISTS Fordelsprogram;")
+    cur.execute("DROP TABLE IF EXISTS KundeFordelsprogram;")
     cur.execute("DROP TABLE IF EXISTS Kunde;")
+    cur.execute("DROP TABLE IF EXISTS Flyselskap;")
 
-    # -- Opprett tabeller, please husk riktig rekkefølge hvis dere endrer --
+    # -- Opprett tabeller, husk riktig rekkefolke folkens --
 
     # 1) Flyselskap
     cur.execute("""
@@ -114,7 +119,30 @@ def opprett_database(db_fil="flydb.sqlite"):
     );
     """)
 
-    # 7) Flyvning
+    # Mellomlanding
+    # Tanken her: en rute kan ha 0..n mellomlandinger (flyrutenummer + rekkefolge).
+    cur.execute("""
+    CREATE TABLE Mellomlanding (
+        mellomlanding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        flyrutenummer    TEXT NOT NULL,
+        flyplasskode     TEXT NOT NULL,
+        rekkefolge       INTEGER NOT NULL,
+        ankomsttid       TEXT,
+        avgangstid       TEXT,
+
+        FOREIGN KEY (flyrutenummer)
+          REFERENCES Flyrute(flyrutenummer)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE,
+
+        FOREIGN KEY (flyplasskode)
+          REFERENCES Flyplass(flyplasskode)
+          ON DELETE RESTRICT
+          ON UPDATE CASCADE
+    );
+    """)
+
+    # 7) Flyvning (sammensatt PK av rute + løpenummer)
     cur.execute("""
     CREATE TABLE Flyvning (
         flyrutenummer       TEXT NOT NULL,
@@ -124,7 +152,7 @@ def opprett_database(db_fil="flydb.sqlite"):
         registreringsnummer TEXT,           -- referanse til Fly
         faktisk_avgang      TEXT,
         faktisk_ankomst     TEXT,
-        PRIMARY KEY (flyrutenummer, lopenummer),  -- sammensatt PK
+        PRIMARY KEY (flyrutenummer, lopenummer),
 
         FOREIGN KEY (flyrutenummer)
             REFERENCES Flyrute(flyrutenummer)
@@ -155,6 +183,39 @@ def opprett_database(db_fil="flydb.sqlite"):
     );
     """)
 
+    # Fordelsprogram + relasjon til Kunde
+    cur.execute("""
+    CREATE TABLE Fordelsprogram (
+        program_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        programnavn       TEXT NOT NULL,
+        flyselskapskode   TEXT NOT NULL,
+
+        FOREIGN KEY (flyselskapskode)
+          REFERENCES Flyselskap(flyselskapskode)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE KundeFordelsprogram (
+        kundenr       INTEGER NOT NULL,
+        program_id    INTEGER NOT NULL,
+        medlemsnummer TEXT,  -- unikt nr for kundeforhold
+        PRIMARY KEY (kundenr, program_id),
+
+        FOREIGN KEY (kundenr)
+          REFERENCES Kunde(kundenr)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE,
+
+        FOREIGN KEY (program_id)
+          REFERENCES Fordelsprogram(program_id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE
+    );
+    """)
+
     # 9) Bestilling
     cur.execute("""
     CREATE TABLE Bestilling (
@@ -172,7 +233,6 @@ def opprett_database(db_fil="flydb.sqlite"):
     """)
 
     # 10) Billett
-    # Fikk billett til å peke på de to kolonnene i Flyvning som utgjør PK.
     cur.execute("""
     CREATE TABLE Billett (
         billett_id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,24 +255,48 @@ def opprett_database(db_fil="flydb.sqlite"):
     );
     """)
 
-    # 11) Bagasje
+    # DelReise
     cur.execute("""
-    CREATE TABLE Bagasje (
-        bagasje_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-        billett_id   INTEGER NOT NULL,
-        vekt         REAL,
-        innsjekk_tid TEXT NOT NULL,
+    CREATE TABLE DelReise (
+        delreise_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        billett_id        INTEGER NOT NULL,
+        flyrutenummer     TEXT NOT NULL,
+        flyvning_lopenr   INTEGER NOT NULL,
+        valgtsete         TEXT,
 
         FOREIGN KEY (billett_id)
           REFERENCES Billett(billett_id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE,
+
+        FOREIGN KEY (flyrutenummer, flyvning_lopenr)
+          REFERENCES Flyvning(flyrutenummer, lopenummer)
+          ON DELETE RESTRICT
+          ON UPDATE CASCADE
+    );
+    """)
+
+    # 11) Bagasje / InnsjekketBagasje
+    # La til "innleveringstid" for å ha en tidspunkt for innsjekking.'
+    # Mulig de andre ikke bruker denne men den var med i siste versjonen jeg fikk.
+    cur.execute("""
+    CREATE TABLE InnsjekketBagasje (
+        registreringsnr  TEXT PRIMARY KEY,
+        delreise_id      INTEGER NOT NULL,
+        vekt             REAL,
+        innleveringstid  TEXT NOT NULL,
+
+        FOREIGN KEY (delreise_id)
+          REFERENCES DelReise(delreise_id)
           ON DELETE CASCADE
           ON UPDATE CASCADE
     );
     """)
 
     # ============= TRIGGER  =============
+    # Fikk til Billettkjøp kun når status='planned' i Flyvning.
     cur.execute("""
-    CREATE TRIGGER ensure_planned_flyvning -- Kun tillate billettkjøp for planlagt flyvning
+    CREATE TRIGGER ensure_planned_flyvning
     BEFORE INSERT ON Billett
     FOR EACH ROW
     BEGIN
@@ -229,7 +313,7 @@ def opprett_database(db_fil="flydb.sqlite"):
     END;
     """)
 
-    # -- Ferdigsnakka --
+    # Ferdigsnakka
     conn.commit()
     conn.close()
 
